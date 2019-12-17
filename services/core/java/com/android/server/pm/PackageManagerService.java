@@ -3183,35 +3183,14 @@ public class PackageManagerService extends IPackageManager.Stub
 
             // Disable components marked for disabling at build-time
             mDisabledComponentsList = new ArrayList<ComponentName>();
-            for (String name : mContext.getResources().getStringArray(
-                    com.android.internal.R.array.config_disabledComponents)) {
-                ComponentName cn = ComponentName.unflattenFromString(name);
-                mDisabledComponentsList.add(cn);
-                Slog.v(TAG, "Disabling " + name);
-                String className = cn.getClassName();
-                PackageSetting pkgSetting = mSettings.mPackages.get(cn.getPackageName());
-                if (pkgSetting == null || pkgSetting.pkg == null
-                        || !pkgSetting.pkg.hasComponentClassName(className)) {
-                    Slog.w(TAG, "Unable to disable " + name);
-                    continue;
-                }
-                pkgSetting.disableComponentLPw(className, UserHandle.USER_OWNER);
-            }
+            enableComponents(mContext.getResources().getStringArray(
+                    com.android.internal.R.array.config_deviceDisabledComponents), false);
+            enableComponents(mContext.getResources().getStringArray(
+                    com.android.internal.R.array.config_globallyDisabledComponents), false);
 
             // Enable components marked for forced-enable at build-time
-            for (String name : mContext.getResources().getStringArray(
-                    com.android.internal.R.array.config_forceEnabledComponents)) {
-                ComponentName cn = ComponentName.unflattenFromString(name);
-                Slog.v(TAG, "Enabling " + name);
-                String className = cn.getClassName();
-                PackageSetting pkgSetting = mSettings.mPackages.get(cn.getPackageName());
-                if (pkgSetting == null || pkgSetting.pkg == null
-                        || !pkgSetting.pkg.hasComponentClassName(className)) {
-                    Slog.w(TAG, "Unable to enable " + name);
-                    continue;
-                }
-                pkgSetting.enableComponentLPw(className, UserHandle.USER_OWNER);
-            }
+            enableComponents(mContext.getResources().getStringArray(
+                    com.android.internal.R.array.config_forceEnabledComponents), true);
 
             // If this is first boot after an OTA, and a normal boot, then
             // we need to clear code cache directories.
@@ -3327,6 +3306,29 @@ public class PackageManagerService extends IPackageManager.Stub
         mInstaller.setWarnIfHeld(mPackages);
 
         Trace.traceEnd(TRACE_TAG_PACKAGE_MANAGER);
+    }
+
+    private void enableComponents(String[] components, boolean enable) {
+        // Disable or enable components marked at build-time
+        for (String name : components) {
+            ComponentName cn = ComponentName.unflattenFromString(name);
+            if (!enable) {
+                mDisabledComponentsList.add(cn);
+            }
+            Slog.v(TAG, "Changing enabled state of " + name + " to " + enable);
+            String className = cn.getClassName();
+            PackageSetting pkgSetting = mSettings.mPackages.get(cn.getPackageName());
+            if (pkgSetting == null || pkgSetting.pkg == null
+                    || !pkgSetting.pkg.hasComponentClassName(className)) {
+                Slog.w(TAG, "Unable to change enabled state of " + name + " to " + enable);
+                continue;
+            }
+            if (enable) {
+                pkgSetting.enableComponentLPw(className, UserHandle.USER_OWNER);
+            } else {
+                pkgSetting.disableComponentLPw(className, UserHandle.USER_OWNER);
+            }
+        }
     }
 
     /**
@@ -8918,10 +8920,10 @@ public class PackageManagerService extends IPackageManager.Stub
                     + " better than this " + pkg.getLongVersionCode());
         }
 
-        // Verify certificates against what was last scanned. If it is an updated priv app, we will
-        // force re-collecting certificate.
-        final boolean forceCollect = PackageManagerServiceUtils.isApkVerificationForced(
-                disabledPkgSetting);
+        // Verify certificates against what was last scanned. If there was an upgrade or this is an
+        // updated priv app, we will force re-collecting certificate.
+        final boolean forceCollect = mIsUpgrade ||
+                PackageManagerServiceUtils.isApkVerificationForced(disabledPkgSetting);
         // Full APK verification can be skipped during certificate collection, only if the file is
         // in verified partition, or can be verified on access (when apk verity is enabled). In both
         // cases, only data in Signing Block is verified instead of the whole file.
@@ -18242,6 +18244,12 @@ public class PackageManagerService extends IPackageManager.Stub
     @Override
     public boolean isPackageDeviceAdminOnAnyUser(String packageName) {
         final int callingUid = Binder.getCallingUid();
+        if (checkUidPermission(android.Manifest.permission.MANAGE_USERS, callingUid)
+                != PERMISSION_GRANTED) {
+            EventLog.writeEvent(0x534e4554, "128599183", -1, "");
+            throw new SecurityException(android.Manifest.permission.MANAGE_USERS
+                    + " permission is required to call this API");
+        }
         if (getInstantAppPackageName(callingUid) != null
                 && !isCallerSameApp(packageName, callingUid)) {
             return false;
@@ -24673,11 +24681,9 @@ Slog.v(TAG, ":: stepped forward, applying functor at tag " + parser.getName());
         }
         if (mExternalSourcesPolicy != null) {
             int isTrusted = mExternalSourcesPolicy.getPackageTrustedToInstallApps(packageName, uid);
-            if (isTrusted != PackageManagerInternal.ExternalSourcesPolicy.USER_DEFAULT) {
-                return isTrusted == PackageManagerInternal.ExternalSourcesPolicy.USER_TRUSTED;
-            }
+            return isTrusted == PackageManagerInternal.ExternalSourcesPolicy.USER_TRUSTED;
         }
-        return checkUidPermission(appOpPermission, uid) == PERMISSION_GRANTED;
+        return false;
     }
 
     @Override
